@@ -5,5 +5,5 @@ Experimental toolbox to manage PR in mathcomp
 
 Clone this repo (here we assume `TOOLS=<the path to your repo>```, make sure `sqlite3`, `sed` and `awk` are availabe on your system, and from the repository run e.g.
 ```bash
-$TOOLS/changes.sh -s upstream/master *
+$TOOLS/changelog/changes.sh -s upstream/master *
 ```
