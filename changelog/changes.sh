@@ -2,6 +2,8 @@
 set -e
 shopt -s nullglob
 
+CHGLOGDIR=$(dirname $0)
+
 if [ "$DEBUG" = 1 ]; then
   set -x
 fi
@@ -143,7 +145,7 @@ for f in $FILES; do
 done
 
 for f in $FILES; do
-  cat $D/diffs/$f | awk -f etc/changes.awk -v file=$f | $SQL --batch
+  cat $D/diffs/$f | awk -f $CHGLOGDIR/changes.awk -v file=$f | $SQL --batch
 done
 
 $SQL "select name from changes" > $D/all_changes
