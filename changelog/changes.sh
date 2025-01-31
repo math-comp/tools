@@ -18,6 +18,7 @@ Usage: changes [-h|-?|--help]        // prints this
                [-i|--interactive]    // run sqllite on the db
                [-e|--exclude]        // excludes a list of names
                [-c|--check]          // checks that a changelog contains all the changes
+               [-m|--make-entry]     // generate a make-entry instead of showing the output
                file*
 EOF
 }
@@ -151,7 +152,7 @@ done
 $SQL "select name from changes" > $D/all_changes
 
 cat $EXCLUDE | while read d; do
-  $SQL "delete from changes where name = \"$d\";"
+  $SQL "delete from changes where name = '${d/\'/\'\'}'"
 done
 
 $SQL "select name from changes" > $D/nonexcluded_changes
@@ -161,6 +162,7 @@ $SQL 'create unique index deprecated_idx on deprecated(name);'
 
 parse_deprecated() {
   NAME=$1
+  ESCAPED_NAME=${NAME/"'"/"''"}
   shift
   FILE=$1
   shift
@@ -170,22 +172,105 @@ parse_deprecated() {
   if [ "$TARGET" ]; then
     if echo $* | grep -qo "rename"; then RENAMED=1; fi
     if echo $* | grep -qEo "generali[zs]e"; then GENERALIZED=1; fi
-    TARGET_FILE=$($SQL "select added_file from changes where name=\"$TARGET\";")
+    TARGET_FILE=$($SQL "select added_file from changes where name='$TARGET';")
   fi
   $SQL "insert into deprecated values
-     (\"$NAME\", \"$FILE\", $RENAMED, $GENERALIZED, \"$TARGET\", \"$TARGET_FILE\", \"$*\");"
-  $SQL "delete from changes where name=\"$NAME\";"
+     ('$ESCAPED_NAME', '$FILE', $RENAMED, $GENERALIZED, '$TARGET', '$TARGET_FILE', '$*');"
+  $SQL "delete from changes where name='$ESCAPED_NAME';"
   if [ "$RENAMED" == "1" ] || [ "$GENERALIZED" == "1" ]; then
-    $SQL "delete from changes where name=\"$TARGET\";"
+    $SQL "delete from changes where name='$TARGET';"
   fi
 }
 
 $SQL "select name, deprecated_file, deprecated_note from changes
-      where deprecated_file != \"\"" |\
+      where deprecated_file != ''" |\
 while read d; do
   args=${d//|/ }
   parse_deprecated $args
 done
+
+print_added() {
+    for f in $FILES; do
+      sql "select name from changes where removed_file=''
+           and added_file='$f' and deprecated_file='';"
+      if [ $LEN -gt 0 ]; then
+        echo "- in file \`$(basename $f)\`,"
+        for v in $VERNAC; do
+          INIT=20
+          sql "select name from changes where removed_file=''
+               and added_file='$f' and class='$v';"
+          if [ $LEN -gt 0 ]; then
+            echo "  + new $(class $LEN $v) $PP"
+          fi
+        done
+      fi
+    done
+}
+
+print_renamed() {
+    for f in $FILES; do
+      INIT=20
+      sql "select name, target from deprecated
+           where renamed = 1 and generalized = 0
+           and target_file = '$f' and file = '$f';"
+      if [ $LEN -gt 0 ]; then
+        echo "- in file \`$(basename $f)\`,"
+        cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` -> \`\2\`/"
+      fi
+      sql "select distinct file from deprecated
+           where renamed = 1 and generalized = 0
+           and target_file = '$f' and file != '$f';"
+      if [ $LEN -gt 0 ]; then
+        SRCS=$RAW
+        for s in $SRCS; do
+          INIT=50
+          sql "select name, target from deprecated
+               where renamed = 1 and generalized = 0
+               and target_file = '$f' and file = '$s';"
+          echo "- moved from \`$(basename $s)\` to \`$(basename $f)\`:"
+          cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` -> \`\2\`/"
+        done
+      fi
+    done
+}
+
+print_generalized() {
+    for f in $FILES; do
+      INIT=20
+      sql "select name, target from deprecated
+           where generalized = 1
+           and target_file = '$f' and file = '$f';"
+      if [ $LEN -gt 0 ]; then
+        echo "- in file \`$(basename $f)\`,"
+        cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` -> \`\2\`/"
+      fi
+      sql "select distinct file from deprecated
+           where generalized = 1
+           and target_file = '$f' and file != '$f';"
+      if [ $LEN -gt 0 ]; then
+        SRCS=$RAW
+        for s in $SRCS; do
+          INIT=50
+          sql "select name, target from deprecated
+               where generalized = 1
+               and target_file = '$f' and file = '$s';"
+          echo "- moved from \`$(basename $s)\` to \`$(basename $f)\`:"
+          cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` -> \`\2\`/"
+        done
+      fi
+    done
+}
+
+print_deprecated() {
+    for f in $FILES; do
+      INIT=20
+      sql "select name, note from deprecated where file='$f' and renamed = 0 and generalized = 0;"
+      if [ $LEN -gt 0 ]; then
+       echo "- in file \`$(basename $f)\`, deprecated"
+       cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` (\2),/"
+      fi
+    done
+}
 
 case $OUTMODE in
   "raw")
@@ -201,93 +286,26 @@ case $OUTMODE in
   "changelog")
     echo "### Added"
     echo ""
-    for f in $FILES; do
-      sql "select name from changes where removed_file=\"\"
-           and added_file=\"$f\" and deprecated_file=\"\";"
-      if [ $LEN -gt 0 ]; then
-        echo "- in file \`$(basename $f)\`,"
-        for v in $VERNAC; do
-          INIT=20
-          sql "select name from changes where removed_file=\"\"
-               and added_file=\"$f\" and class=\"$v\";"
-          if [ $LEN -gt 0 ]; then
-            echo "  + new $(class $LEN $v) $PP"
-          fi
-        done
-      fi
-    done
+    print_added
     echo ""
     echo "### Renamed"
     echo ""
-    for f in $FILES; do
-      INIT=20
-      sql "select name, target from deprecated
-           where renamed = 1 and generalized = 0
-           and target_file = \"$f\" and file = \"$f\";"
-      if [ $LEN -gt 0 ]; then
-        echo "- in file \`$(basename $f)\`,"
-        cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` -> \`\2\`/"
-      fi
-      sql "select distinct file from deprecated
-           where renamed = 1 and generalized = 0
-           and target_file = \"$f\" and file != \"$f\";"
-      if [ $LEN -gt 0 ]; then
-        SRCS=$RAW
-        for s in $SRCS; do
-          INIT=50
-          sql "select name, target from deprecated
-               where renamed = 1 and generalized = 0
-               and target_file = \"$f\" and file = \"$s\";"
-          echo "- moved from \`$(basename $s)\` to \`$(basename $f)\`:"
-          cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` -> \`\2\`/"
-        done
-      fi
-    done
+    print_renamed
     echo ""
     echo "### Generalized"
     echo ""
-    for f in $FILES; do
-      INIT=20
-      sql "select name, target from deprecated
-           where generalized = 1
-           and target_file = \"$f\" and file = \"$f\";"
-      if [ $LEN -gt 0 ]; then
-        echo "- in file \`$(basename $f)\`,"
-        cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` -> \`\2\`/"
-      fi
-      sql "select distinct file from deprecated
-           where generalized = 1
-           and target_file = \"$f\" and file != \"$f\";"
-      if [ $LEN -gt 0 ]; then
-        SRCS=$RAW
-        for s in $SRCS; do
-          INIT=50
-          sql "select name, target from deprecated
-               where generalized = 1
-               and target_file = \"$f\" and file = \"$s\";"
-          echo "- moved from \`$(basename $s)\` to \`$(basename $f)\`:"
-          cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` -> \`\2\`/"
-        done
-      fi
-    done
+    print_generalized
     echo ""
     echo "### Deprecated"
     echo ""
-    for f in $FILES; do
-      INIT=20
-      sql "select name, note from deprecated where file=\"$f\" and renamed = 0 and generalized = 0;"
-      if [ $LEN -gt 0 ]; then
-       echo "- in file \`$(basename $f)\`, deprecated"
-       cat $OUT | sed "s/^\(.*\)|\(.*\)/  + \`\1\` (\2),/"
-      fi
-    done
+    print_deprecated
     echo ""
     echo "### Maybe changed"
     echo ""
     for f in $FILES; do
       INIT=20
-      sql "select name from changes where added_file=\"$f\"
-           and removed_file=\"$f\" and deprecated_file=\"\";"
+      sql "select name from changes where added_file='$f'
+           and removed_file='$f' and deprecated_file='';"
       if [ $LEN -gt 0 ]; then
         echo "- in file \`$(basename $f)\`, updated $PP"
       fi
@@ -296,15 +314,15 @@ case $OUTMODE in
     echo "### Moved from one file to another and maybe changed or generalized"
     echo ""
     for f in $FILES; do
-      sql "select distinct removed_file from changes where added_file=\"$f\"
-           and removed_file != \"\" and removed_file != \"$f\"
-           and deprecated_file=\"\";"
+      sql "select distinct removed_file from changes where added_file='$f'
+           and removed_file != '' and removed_file != '$f'
+           and deprecated_file='';"
       if [ $LEN -gt 0 ]; then
         SRCS=$RAW
         for s in $SRCS; do
           INIT=50
-          sql "select name from changes where added_file=\"$f\"
-               and removed_file=\"$s\" and deprecated_file=\"\";"
+          sql "select name from changes where added_file='$f'
+               and removed_file='$s' and deprecated_file='';"
           echo "- moved from \`$(basename $s)\` to \`$(basename $f)\`: $PP"
         done
       fi
@@ -314,8 +332,8 @@ case $OUTMODE in
     echo ""
     for f in $FILES; do
       INIT=20
-      sql "select name from changes where added_file=\"\"
-           and removed_file=\"$f\" and deprecated_file=\"\";"
+      sql "select name from changes where added_file=''
+           and removed_file='$f' and deprecated_file='';"
       if [ $LEN -gt 0 ]; then
         echo "- in file \`$(basename $f)\`, removed $PP"
       fi
